@@ -106,7 +106,7 @@ class SettingsActivity : Activity() {
             listOf("5 min avant" to 5, "10 min avant" to 10, "15 min avant" to 15, "30 min avant" to 30),
             Prefs.K_REMIND_MIN, 15
         ))
-        root.addView(actionButton("VOIR MON AGENDA") { present("Agenda", Speech.agendaToday(this)) })
+        root.addView(actionButton("VOIR MON AGENDA") { present(Brief.agenda(this), Speech.agendaToday(this)) })
 
         // ---- Briefing & marchés
         root.addView(section("BRIEFING & MARCHÉS"))
@@ -395,13 +395,48 @@ class SettingsActivity : Activity() {
     }
 
     private fun testVoice() {
-        present("Rapport", Speech.report(this, runCatching { SystemInfo.read(this) }.getOrNull(), DataRepo.weather(this)))
+        val s = runCatching { SystemInfo.read(this) }.getOrNull()
+        val w = DataRepo.weather(this)
+        present(Brief.report(this, s, w, DataRepo.quotes(this)), Speech.report(this, s, w))
     }
 
-    /** Voix si activée, sinon une fenêtre avec le texte. */
-    private fun present(title: String, text: String) {
-        if (Prefs.voice(this)) speaker.say(text)
-        else AlertDialog.Builder(this).setTitle(title).setMessage(text).setPositiveButton("OK", null).show()
+    /** Affiche une fiche « points clés » (et la lit si la voix est activée). */
+    private fun present(card: Card, speech: String) {
+        if (Prefs.voice(this)) speaker.say(speech)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+            setBackgroundColor(bg)
+        }
+        box.addView(label(card.title, 17f, accent, bold = true).apply { letterSpacing = 0.12f; setPadding(0, dp(8), 0, dp(6)) })
+        val up = 0xFF45E08A.toInt()
+        val down = 0xFFFF5B6B.toInt()
+        val warn = 0xFFFFB347.toInt()
+        for (sec in card.sections) {
+            if (sec.title.isNotBlank()) box.addView(label(sec.title, 12f, accent, bold = true).apply {
+                letterSpacing = 0.2f; setPadding(0, dp(14), 0, dp(4))
+            })
+            for (l in sec.lines) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(5), 0, dp(5))
+                }
+                row.addView(label(l.icon, 16f, Color.WHITE), LinearLayout.LayoutParams(dp(30), ViewGroup.LayoutParams.WRAP_CONTENT))
+                row.addView(label(l.label, 15f, if (l.alert && l.value.isBlank()) warn else Color.rgb(205, 228, 236)).apply {
+                    maxLines = 2
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (l.value.isNotBlank()) row.addView(label(l.value, 16f, if (l.alert) warn else Color.WHITE, bold = true).apply {
+                    setPadding(dp(8), 0, 0, 0)
+                })
+                if (l.change.isNotBlank()) row.addView(label(l.change, 14f, when (l.trend) { 1 -> up; -1 -> down; else -> subText }, bold = true).apply {
+                    setPadding(dp(10), 0, 0, 0)
+                })
+                box.addView(row)
+            }
+        }
+        val scroll = ScrollView(this).apply { setBackgroundColor(bg); addView(box) }
+        AlertDialog.Builder(this).setView(scroll).setPositiveButton("OK", null).show()
     }
 
     // ---------------------------------------------------------------- météo
@@ -545,8 +580,11 @@ class SettingsActivity : Activity() {
         Thread {
             runCatching { DataRepo.refresh(this) }
             val s = runCatching { SystemInfo.read(this) }.getOrNull()
-            val txt = Speech.briefing(this, s, DataRepo.weather(this), DataRepo.quotes(this))
-            runOnUiThread { present("Briefing du matin", txt) }
+            val w = DataRepo.weather(this)
+            val q = DataRepo.quotes(this)
+            val card = Brief.briefing(this, s, w, q)
+            val txt = Speech.briefing(this, s, w, q)
+            runOnUiThread { present(card, txt) }
         }.start()
     }
 

@@ -11,9 +11,6 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.text.Layout
-import android.text.StaticLayout
-import android.text.TextPaint
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -47,21 +44,19 @@ class HudRenderer(ctx: Context) {
     var nextEvent: Event? = null
     var agendaAllowed = false
 
-    // Message texte affiché quand on touche une zone (Jarvis silencieux)
-    private var message: String? = null
-    private var messageUntil = 0L
-    private var messageLayout: StaticLayout? = null
-    private val msgPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+    // Fiche affichée quand on touche une zone
+    private var card: Card? = null
+    private var cardUntil = 0L
+    private val CARD_MS = 15_000L
 
-    fun showMessage(t: String, now: Long) {
-        message = t
-        messageUntil = now + 12_000
-        messageLayout = null
+    fun showCard(c: Card, now: Long) {
+        card = c
+        cardUntil = now + CARD_MS
     }
 
-    fun clearMessage() { message = null; messageLayout = null }
+    fun clearMessage() { card = null }
 
-    fun hasMessage(now: Long): Boolean = message != null && now < messageUntil
+    fun hasMessage(now: Long): Boolean = card != null && now < cardUntil
 
     private var w = 0
     private var h = 0
@@ -133,51 +128,124 @@ class HudRenderer(ctx: Context) {
         drawTicker(c, now)
         drawReactor(c, now, s, talking)
         if (showPanels) drawPanels(c, s, now)
-        if (hasMessage(now)) drawMessage(c, now) else if (message != null) clearMessage()
+        if (hasMessage(now)) drawMessage(c, now) else if (card != null) clearMessage()
     }
 
     private fun drawMessage(c: Canvas, now: Long) {
-        val m = dp(16f)
-        val pad = dp(16f)
+        val cd = card ?: return
+        val m = dp(14f)
+        val pad = dp(14f)
         val boxW = w - 2 * m
-        if (messageLayout == null) {
-            msgPaint.typeface = regular
-            msgPaint.textSize = dp(15f)
-            msgPaint.color = Color.WHITE
-            val txt = message ?: return
-            messageLayout = StaticLayout.Builder.obtain(txt, 0, txt.length, msgPaint, (boxW - 2 * pad).toInt())
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .setLineSpacing(dp(3f), 1f)
-                .setMaxLines(14)
-                .build()
+        val headerH = dp(34f)
+        val secH = dp(24f)
+        val rowH = dp(27f)
+        var contentH = headerH
+        for (sec in cd.sections) {
+            if (sec.title.isNotBlank()) contentH += secH
+            contentH += sec.lines.size * rowH
         }
-        val lay = messageLayout ?: return
-        val boxH = lay.height + 2 * pad + dp(18f)
-        var top = cy + radius + dp(28f)
-        if (top + boxH > h - dp(24f)) top = (h - dp(24f) - boxH).coerceAtLeast(dp(116f))
+        val boxH = contentH + pad + dp(10f)
+        val maxH = h - dp(140f)
+        val scale = if (boxH > maxH) maxH / boxH else 1f
+        val realH = boxH * scale
+        var top = cy + radius + dp(24f)
+        if (top + realH > h - dp(24f)) top = (h - dp(24f) - realH).coerceAtLeast(dp(116f))
+
         val cut = dp(14f)
         path.reset()
         path.moveTo(m, top)
         path.lineTo(m + boxW - cut, top)
         path.lineTo(m + boxW, top + cut)
-        path.lineTo(m + boxW, top + boxH)
-        path.lineTo(m + cut, top + boxH)
-        path.lineTo(m, top + boxH - cut)
+        path.lineTo(m + boxW, top + realH)
+        path.lineTo(m + cut, top + realH)
+        path.lineTo(m, top + realH - cut)
         path.close()
-        fill.color = Color.argb(225, 3, 14, 22)
+        fill.color = Color.argb(232, 3, 13, 21)
         c.drawPath(path, fill)
         stroke.strokeWidth = dp(1.2f)
-        stroke.color = acc(0.7f)
+        stroke.color = acc(0.75f)
         c.drawPath(path, stroke)
         fill.color = acc(1f)
-        c.drawRect(m, top, m + dp(40f), top + dp(2.5f), fill)
-        // barre de temps restant
-        val left = ((messageUntil - now) / 12_000f).coerceIn(0f, 1f)
-        fill.color = acc(0.5f)
-        c.drawRect(m + pad, top + boxH - dp(8f), m + pad + (boxW - 2 * pad) * left, top + boxH - dp(6f), fill)
+        c.drawRect(m, top, m + dp(46f), top + dp(3f), fill)
+
+        // temps restant
+        val left = ((cardUntil - now) / CARD_MS.toFloat()).coerceIn(0f, 1f)
+        fill.color = acc(0.45f)
+        c.drawRect(m + pad, top + realH - dp(7f), m + pad + (boxW - 2 * pad) * left, top + realH - dp(5f), fill)
+
         c.save()
-        c.translate(m + pad, top + pad)
-        lay.draw(c)
+        c.translate(m, top)
+        c.scale(scale, scale)
+        val x0 = pad
+        val x1 = boxW / scale - pad
+        var y = dp(24f)
+
+        // titre
+        text.textAlign = Paint.Align.LEFT
+        text.typeface = bold
+        text.textSize = dp(15f)
+        text.letterSpacing = 0.16f
+        text.color = acc(1f)
+        text.setShadowLayer(dp(6f), 0f, 0f, acc(0.7f))
+        c.drawText(fit(cd.title, x1 - x0 - dp(30f)), x0, y, text)
+        text.clearShadowLayer()
+        text.textAlign = Paint.Align.RIGHT
+        text.typeface = regular
+        text.textSize = dp(13f)
+        text.letterSpacing = 0f
+        text.color = subColor
+        c.drawText("✕", x1, y, text)
+        y = headerH
+
+        for (sec in cd.sections) {
+            if (sec.title.isNotBlank()) {
+                fill.color = acc(0.25f)
+                c.drawRect(x0, y + dp(6f), x1, y + dp(7f), fill)
+                text.textAlign = Paint.Align.LEFT
+                text.typeface = bold
+                text.textSize = dp(10.5f)
+                text.letterSpacing = 0.22f
+                text.color = acc(0.9f)
+                c.drawText(sec.title, x0, y + dp(19f), text)
+                y += secH
+            }
+            for (l in sec.lines) {
+                val base = y + dp(19f)
+                // icône
+                text.textAlign = Paint.Align.LEFT
+                text.letterSpacing = 0f
+                text.textSize = dp(15f)
+                text.color = Color.WHITE
+                c.drawText(l.icon, x0, base, text)
+                // variation (à droite)
+                var right = x1
+                if (l.change.isNotBlank()) {
+                    text.textAlign = Paint.Align.RIGHT
+                    text.typeface = bold
+                    text.textSize = dp(13f)
+                    text.color = when (l.trend) { 1 -> upColor; -1 -> downColor; else -> subColor }
+                    c.drawText(l.change, right, base, text)
+                    right -= text.measureText(l.change) + dp(10f)
+                }
+                // valeur
+                if (l.value.isNotBlank()) {
+                    text.textAlign = Paint.Align.RIGHT
+                    text.typeface = bold
+                    text.textSize = dp(15f)
+                    text.color = if (l.alert) warnColor else Color.WHITE
+                    c.drawText(l.value, right, base, text)
+                    right -= text.measureText(l.value) + dp(12f)
+                }
+                // libellé
+                text.textAlign = Paint.Align.LEFT
+                text.typeface = regular
+                text.textSize = dp(14f)
+                text.color = if (l.alert && l.value.isBlank()) warnColor else Color.rgb(205, 228, 236)
+                val lx = x0 + dp(28f)
+                c.drawText(fit(l.label, (right - lx).coerceAtLeast(dp(40f))), lx, base, text)
+                y += rowH
+            }
+        }
         c.restore()
     }
 

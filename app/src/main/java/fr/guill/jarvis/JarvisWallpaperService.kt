@@ -99,23 +99,21 @@ class JarvisWallpaperService : WallpaperService() {
             if (zone == Zone.NONE) return
             if (speaker.speaking) { speaker.stop(); return } // toucher à nouveau coupe la parole
             if (renderer.hasMessage(System.currentTimeMillis())) { renderer.clearMessage(); drawFrame(); return }
-            val text = when (zone) {
-                Zone.WEATHER -> Speech.weatherFull(renderer.weather)
-                Zone.AGENDA -> Speech.agendaToday(ctx)
-                Zone.TICKER -> Speech.markets(renderer.quotes)
-                else -> Speech.report(ctx, snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull(), renderer.weather)
+            val s = snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull()
+            when (zone) {
+                Zone.WEATHER -> present(Brief.weather(renderer.weather)) { Speech.weatherFull(renderer.weather) }
+                Zone.AGENDA -> present(Brief.agenda(ctx)) { Speech.agendaToday(ctx) }
+                Zone.TICKER -> present(Brief.markets(renderer.quotes)) { Speech.markets(renderer.quotes) }
+                else -> present(Brief.report(ctx, s, renderer.weather, renderer.quotes)) { Speech.report(ctx, s, renderer.weather) }
             }
-            present(text)
             maybeRefresh()
         }
 
-        /** Voix si elle est activée, sinon texte affiché sur le fond d'écran. */
-        private fun present(text: String) {
-            if (Prefs.voice(ctx)) speaker.say(text)
-            else {
-                renderer.showMessage(text, System.currentTimeMillis())
-                drawFrame()
-            }
+        /** Affiche la fiche sur le fond d'écran (et la lit à voix haute si la voix est activée). */
+        private fun present(card: Card, speech: () -> String) {
+            renderer.showCard(card, System.currentTimeMillis())
+            if (Prefs.voice(ctx)) speaker.say(speech())
+            drawFrame()
         }
 
         override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
@@ -178,12 +176,9 @@ class JarvisWallpaperService : WallpaperService() {
             sp.edit().putString(Prefs.K_LAST_BRIEF, today).apply()
             maybeRefresh(force = DataRepo.isStale(ctx)) {
                 val s = snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull()
-                val txt = Speech.briefing(ctx, s, renderer.weather, renderer.quotes)
-                if (Prefs.voice(ctx)) speaker.say(txt)
-                else {
-                    Reminders.notify(ctx, txt, "Briefing du matin", 1002)
-                    present(txt)
-                }
+                val card = Brief.briefing(ctx, s, renderer.weather, renderer.quotes)
+                Reminders.notifyCard(ctx, card, 1002)
+                present(card) { Speech.briefing(ctx, s, renderer.weather, renderer.quotes) }
             }
         }
 

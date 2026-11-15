@@ -62,6 +62,25 @@ object Reminders {
         }
     }
 
+    /** Notification « points clés » à partir d'une fiche. */
+    fun notifyCard(c: Context, card: Card, id: Int) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        ensureChannel(c)
+        val lines = card.plainLines()
+        val style = Notification.InboxStyle().setBigContentTitle(card.title)
+        lines.take(9).forEach { style.addLine(it) }
+        val n = Notification.Builder(c, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle(card.title)
+            .setContentText(lines.take(3).joinToString("   "))
+            .setStyle(style)
+            .setAutoCancel(true)
+            .build()
+        c.getSystemService(NotificationManager::class.java).notify(id, n)
+    }
+
     fun notify(c: Context, text: String, title: String = "J.A.R.V.I.S.", id: Int = 1001) {
         if (Build.VERSION.SDK_INT >= 33 &&
             c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -88,7 +107,15 @@ class ReminderReceiver : BroadcastReceiver() {
             return
         }
         val text = Speech.reminder(title, intent.getLongExtra("begin", System.currentTimeMillis()), intent.getStringExtra("loc") ?: "")
-        Reminders.notify(c, text, "Rendez-vous")
+        val begin = intent.getLongExtra("begin", System.currentTimeMillis())
+        val mins = ((begin - System.currentTimeMillis()) / 60_000).coerceAtLeast(0)
+        val loc = intent.getStringExtra("loc") ?: ""
+        val hm = java.text.SimpleDateFormat("HH:mm", Locale.FRANCE).format(java.util.Date(begin))
+        Reminders.notify(
+            c,
+            "🕒 $hm" + if (loc.isNotBlank()) "   📍 $loc" else "",
+            "⏰ " + (if (mins <= 1) "Maintenant" else "Dans $mins min") + " · $title"
+        )
         if (!Prefs.voice(c)) {
             Reminders.schedule(c)
             return
