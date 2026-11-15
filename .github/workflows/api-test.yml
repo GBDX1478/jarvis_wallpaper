@@ -8,13 +8,9 @@ jobs:
     steps:
       - run: |
           UA="Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
-          echo "== open-meteo"; curl -s "https://api.open-meteo.com/v1/forecast?latitude=44.84&longitude=-0.58&current=temperature_2m,weather_code,is_day&hourly=precipitation_probability&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=2" | head -c 700; echo
-          echo "== geocoding"; curl -s "https://geocoding-api.open-meteo.com/v1/search?name=Bordeaux&count=1&language=fr" | head -c 400; echo
-          for s in %5EFCHI %5EGSPC %5EIXIC BTC-EUR ETH-EUR EURUSD%3DX EURJPY%3DX JPY%3DX; do
-            echo "== yahoo $s"; curl -s -A "$UA" "https://query1.finance.yahoo.com/v8/finance/chart/$s?range=1d&interval=1d" | head -c 500; echo
-          done
-          echo "== yahoo q2"; curl -s -A "$UA" "https://query2.finance.yahoo.com/v8/finance/chart/%5EFCHI?range=1d&interval=1d" | head -c 300; echo
-          echo "== coingecko"; curl -s "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=eur&include_24hr_change=true"; echo
-          echo "== frankfurter app"; curl -sL "https://api.frankfurter.app/latest?from=EUR&to=USD,JPY"; echo
-          echo "== frankfurter dev"; curl -sL "https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD,JPY"; echo
-          echo "== stooq"; curl -sL "https://stooq.com/q/l/?s=%5Ecac&f=sd2t2ohlc&h&e=csv"; echo
+          echo "== spark"; curl -s -A "$UA" "https://query1.finance.yahoo.com/v7/finance/spark?symbols=%5EFCHI,%5EGSPC,%5EIXIC&range=1d&interval=1d" | head -c 900; echo
+          sleep 5
+          echo "== spark8"; curl -s -A "$UA" "https://query1.finance.yahoo.com/v8/finance/spark?symbols=%5EFCHI,%5EGSPC,%5EIXIC&range=1d&interval=1d" | head -c 900; echo
+          for s in %5EFCHI %5EGSPC %5EIXIC; do sleep 4; echo "== chart slow $s"; curl -s -A "$UA" "https://query2.finance.yahoo.com/v8/finance/chart/$s?range=1d&interval=1d" | head -c 300; echo; done
+          echo "== frankfurter series"; curl -sL "https://api.frankfurter.dev/v1/2026-11-06..?base=EUR&symbols=USD,JPY"; echo
+          echo "== cnbc"; curl -s -A "$UA" "https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?symbols=.FCHI%7C.SPX%7C.IXIC&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json" | head -c 900; echo
