@@ -62,19 +62,19 @@ object Reminders {
         }
     }
 
-    fun notify(c: Context, text: String) {
+    fun notify(c: Context, text: String, title: String = "J.A.R.V.I.S.", id: Int = 1001) {
         if (Build.VERSION.SDK_INT >= 33 &&
             c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
         ensureChannel(c)
         val n = Notification.Builder(c, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
-            .setContentTitle("J.A.R.V.I.S.")
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setAutoCancel(true)
             .build()
-        c.getSystemService(NotificationManager::class.java).notify(1001, n)
+        c.getSystemService(NotificationManager::class.java).notify(id, n)
     }
 }
 
@@ -88,7 +88,11 @@ class ReminderReceiver : BroadcastReceiver() {
             return
         }
         val text = Speech.reminder(title, intent.getLongExtra("begin", System.currentTimeMillis()), intent.getStringExtra("loc") ?: "")
-        Reminders.notify(c, text)
+        Reminders.notify(c, text, "Rendez-vous")
+        if (!Prefs.voice(c)) {
+            Reminders.schedule(c)
+            return
+        }
 
         val result = goAsync()
         val main = Handler(Looper.getMainLooper())

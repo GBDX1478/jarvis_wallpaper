@@ -98,14 +98,24 @@ class JarvisWallpaperService : WallpaperService() {
         private fun onTap(zone: Zone) {
             if (zone == Zone.NONE) return
             if (speaker.speaking) { speaker.stop(); return } // toucher à nouveau coupe la parole
+            if (renderer.hasMessage(System.currentTimeMillis())) { renderer.clearMessage(); drawFrame(); return }
             val text = when (zone) {
                 Zone.WEATHER -> Speech.weatherFull(renderer.weather)
                 Zone.AGENDA -> Speech.agendaToday(ctx)
                 Zone.TICKER -> Speech.markets(renderer.quotes)
                 else -> Speech.report(ctx, snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull(), renderer.weather)
             }
-            speaker.say(text)
+            present(text)
             maybeRefresh()
+        }
+
+        /** Voix si elle est activée, sinon texte affiché sur le fond d'écran. */
+        private fun present(text: String) {
+            if (Prefs.voice(ctx)) speaker.say(text)
+            else {
+                renderer.showMessage(text, System.currentTimeMillis())
+                drawFrame()
+            }
         }
 
         override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
@@ -167,7 +177,12 @@ class JarvisWallpaperService : WallpaperService() {
             sp.edit().putString(Prefs.K_LAST_BRIEF, today).apply()
             maybeRefresh(force = DataRepo.isStale(ctx)) {
                 val s = snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull()
-                speaker.say(Speech.briefing(ctx, s, renderer.weather, renderer.quotes))
+                val txt = Speech.briefing(ctx, s, renderer.weather, renderer.quotes)
+                if (Prefs.voice(ctx)) speaker.say(txt)
+                else {
+                    Reminders.notify(ctx, txt, "Briefing du matin", 1002)
+                    present(txt)
+                }
             }
         }
 
@@ -223,6 +238,7 @@ class JarvisWallpaperService : WallpaperService() {
             if (visible) {
                 val delay = when {
                     speaker.speaking -> 33L
+                    renderer.hasMessage(now) && fps <= 1 -> 250L
                     fps <= 1 -> 1000L
                     else -> 1000L / fps
                 }

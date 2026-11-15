@@ -106,15 +106,17 @@ class SettingsActivity : Activity() {
             listOf("5 min avant" to 5, "10 min avant" to 10, "15 min avant" to 15, "30 min avant" to 30),
             Prefs.K_REMIND_MIN, 15
         ))
-        root.addView(actionButton("ÉCOUTER MON AGENDA") { speaker.say(Speech.agendaToday(this)) })
+        root.addView(actionButton("VOIR MON AGENDA") { present("Agenda", Speech.agendaToday(this)) })
 
         // ---- Briefing & marchés
         root.addView(section("BRIEFING & MARCHÉS"))
+        root.addView(switchRow("Voix de Jarvis", Prefs.K_VOICE, Prefs.voice(this)))
+        root.addView(note("Désactivée : Jarvis reste silencieux. Les infos s'affichent en texte sur le fond d'écran, le briefing et les rappels arrivent en notification."))
         root.addView(switchRow("Briefing du matin", Prefs.K_BRIEFING, Prefs.briefing(this)))
         root.addView(note("Jarvis fait le point (météo, agenda, marchés, batterie) la première fois que vous voyez l'écran d'accueil entre 5 h et midi."))
         root.addView(note("Marchés suivis : CAC 40, S&P 500, Nasdaq, Bitcoin, Ethereum, EUR/USD, EUR/JPY, USD/JPY. Touchez le bandeau sur le fond d'écran pour les entendre."))
         root.addView(space(8))
-        root.addView(actionButton("ÉCOUTER LE BRIEFING") { briefingNow() })
+        root.addView(actionButton("VOIR LE BRIEFING") { briefingNow() })
         root.addView(space(8))
         root.addView(actionButton("ACTUALISER MÉTÉO ET MARCHÉS") { refreshNow() })
 
@@ -145,8 +147,8 @@ class SettingsActivity : Activity() {
             Prefs.K_FPS, 20
         ))
         root.addView(space(12))
-        root.addView(actionButton("TESTER LE RAPPORT VOCAL") { testVoice() })
-        root.addView(note("Sur l'écran d'accueil, touchez le réacteur pour entendre le rapport de Jarvis."))
+        root.addView(actionButton("VOIR LE RAPPORT") { testVoice() })
+        root.addView(note("Sur l'écran d'accueil, touchez le réacteur, la météo, l'agenda ou le bandeau des marchés pour afficher les détails."))
 
         refreshThumbs()
     }
@@ -387,7 +389,13 @@ class SettingsActivity : Activity() {
     }
 
     private fun testVoice() {
-        speaker.say(Speech.report(this, runCatching { SystemInfo.read(this) }.getOrNull(), DataRepo.weather(this)))
+        present("Rapport", Speech.report(this, runCatching { SystemInfo.read(this) }.getOrNull(), DataRepo.weather(this)))
+    }
+
+    /** Voix si activée, sinon une fenêtre avec le texte. */
+    private fun present(title: String, text: String) {
+        if (Prefs.voice(this)) speaker.say(text)
+        else AlertDialog.Builder(this).setTitle(title).setMessage(text).setPositiveButton("OK", null).show()
     }
 
     // ---------------------------------------------------------------- météo
@@ -532,7 +540,7 @@ class SettingsActivity : Activity() {
             runCatching { DataRepo.refresh(this) }
             val s = runCatching { SystemInfo.read(this) }.getOrNull()
             val txt = Speech.briefing(this, s, DataRepo.weather(this), DataRepo.quotes(this))
-            runOnUiThread { speaker.say(txt) }
+            runOnUiThread { present("Briefing du matin", txt) }
         }.start()
     }
 

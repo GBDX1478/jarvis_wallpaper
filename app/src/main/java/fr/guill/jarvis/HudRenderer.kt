@@ -11,6 +11,9 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -42,6 +45,22 @@ class HudRenderer(ctx: Context) {
     var quotes: List<Quote> = emptyList()
     var nextEvent: Event? = null
     var agendaAllowed = false
+
+    // Message texte affiché quand on touche une zone (Jarvis silencieux)
+    private var message: String? = null
+    private var messageUntil = 0L
+    private var messageLayout: StaticLayout? = null
+    private val msgPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+
+    fun showMessage(t: String, now: Long) {
+        message = t
+        messageUntil = now + 12_000
+        messageLayout = null
+    }
+
+    fun clearMessage() { message = null; messageLayout = null }
+
+    fun hasMessage(now: Long): Boolean = message != null && now < messageUntil
 
     private var w = 0
     private var h = 0
@@ -113,6 +132,52 @@ class HudRenderer(ctx: Context) {
         drawTicker(c, now)
         drawReactor(c, now, s, talking)
         if (showPanels) drawPanels(c, s, now)
+        if (hasMessage(now)) drawMessage(c, now) else if (message != null) clearMessage()
+    }
+
+    private fun drawMessage(c: Canvas, now: Long) {
+        val m = dp(16f)
+        val pad = dp(16f)
+        val boxW = w - 2 * m
+        if (messageLayout == null) {
+            msgPaint.typeface = regular
+            msgPaint.textSize = dp(15f)
+            msgPaint.color = Color.WHITE
+            val txt = message ?: return
+            messageLayout = StaticLayout.Builder.obtain(txt, 0, txt.length, msgPaint, (boxW - 2 * pad).toInt())
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setLineSpacing(dp(3f), 1f)
+                .setMaxLines(14)
+                .build()
+        }
+        val lay = messageLayout ?: return
+        val boxH = lay.height + 2 * pad + dp(18f)
+        var top = cy + radius + dp(28f)
+        if (top + boxH > h - dp(24f)) top = (h - dp(24f) - boxH).coerceAtLeast(dp(116f))
+        val cut = dp(14f)
+        path.reset()
+        path.moveTo(m, top)
+        path.lineTo(m + boxW - cut, top)
+        path.lineTo(m + boxW, top + cut)
+        path.lineTo(m + boxW, top + boxH)
+        path.lineTo(m + cut, top + boxH)
+        path.lineTo(m, top + boxH - cut)
+        path.close()
+        fill.color = Color.argb(225, 3, 14, 22)
+        c.drawPath(path, fill)
+        stroke.strokeWidth = dp(1.2f)
+        stroke.color = acc(0.7f)
+        c.drawPath(path, stroke)
+        fill.color = acc(1f)
+        c.drawRect(m, top, m + dp(40f), top + dp(2.5f), fill)
+        // barre de temps restant
+        val left = ((messageUntil - now) / 12_000f).coerceIn(0f, 1f)
+        fill.color = acc(0.5f)
+        c.drawRect(m + pad, top + boxH - dp(8f), m + pad + (boxW - 2 * pad) * left, top + boxH - dp(6f), fill)
+        c.save()
+        c.translate(m + pad, top + pad)
+        lay.draw(c)
+        c.restore()
     }
 
     // ------------------------------------------------------------------ réacteur
