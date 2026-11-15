@@ -11,7 +11,6 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.os.Build
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -19,7 +18,11 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
+
+/** Zones touchables du fond d'écran. */
+enum class Zone { REACTOR, TICKER, WEATHER, AGENDA, ENERGY, STORAGE, NONE }
 
 /** Dessine l'interface façon J.A.R.V.I.S. sur le fond d'écran. */
 class HudRenderer(ctx: Context) {
@@ -34,6 +37,12 @@ class HudRenderer(ctx: Context) {
     var background: Bitmap? = null
     var offsetX = 0.5f
 
+    // Données affichées
+    var weather: Weather? = null
+    var quotes: List<Quote> = emptyList()
+    var nextEvent: Event? = null
+    var agendaAllowed = false
+
     private var w = 0
     private var h = 0
     private var cx = 0f
@@ -41,6 +50,8 @@ class HudRenderer(ctx: Context) {
     private var radius = 0f
     private var dashOuter: DashPathEffect? = null
     private var dashSeg: DashPathEffect? = null
+    private val tickerRect = RectF()
+    private val panelRects = List(4) { RectF() }
 
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -50,11 +61,14 @@ class HudRenderer(ctx: Context) {
     private val bold: Typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
     private val timeFmt = SimpleDateFormat("HH:mm", Locale.FRANCE)
     private val dateFmt = SimpleDateFormat("EEE d MMM", Locale.FRANCE)
+    private val dayFmt = SimpleDateFormat("EEE", Locale.FRANCE)
     private val rect = RectF()
     private val path = Path()
 
     private val warnColor = 0xFFFFB347.toInt()
     private val critColor = 0xFFFF4D5E.toInt()
+    private val upColor = 0xFF45E08A.toInt()
+    private val downColor = 0xFFFF5B6B.toInt()
     private val subColor = Color.rgb(169, 204, 216)
 
     private data class Panel(val title: String, val value: String, val sub: String, val frac: Float?, val level: Int)
@@ -62,15 +76,24 @@ class HudRenderer(ctx: Context) {
     fun layout(width: Int, height: Int) {
         w = width
         h = height
-        radius = min(w, h) * 0.37f
+        radius = min(w, h) * 0.35f
         cx = w / 2f
-        cy = h * 0.33f
+        cy = h * 0.37f
         val k = radius / 146f
         dashOuter = DashPathEffect(floatArrayOf(2 * k, 6 * k), 0f)
         dashSeg = DashPathEffect(floatArrayOf(40 * k, 18 * k, 6 * k, 18 * k), 0f)
+        tickerRect.set(0f, dp(80f), w.toFloat(), dp(108f))
     }
 
-    fun hitReactor(x: Float, y: Float): Boolean = hypot(x - cx, y - cy) <= radius * 1.05f
+    fun zoneAt(x: Float, y: Float): Zone {
+        if (hypot(x - cx, y - cy) <= radius * 1.05f) return Zone.REACTOR
+        if (tickerRect.contains(x, y)) return Zone.TICKER
+        if (showPanels) {
+            val zones = arrayOf(Zone.WEATHER, Zone.AGENDA, Zone.ENERGY, Zone.STORAGE)
+            panelRects.forEachIndexed { i, r -> if (r.contains(x, y)) return zones[i] }
+        }
+        return Zone.NONE
+    }
 
     private fun alpha(color: Int, a: Float): Int =
         (color and 0x00FFFFFF) or ((a.coerceIn(0f, 1f) * 255).toInt() shl 24)
@@ -86,16 +109,17 @@ class HudRenderer(ctx: Context) {
             val extra = (bg.width - w).coerceAtLeast(0)
             c.drawBitmap(bg, -extra * offsetX, 0f, bmpPaint)
         }
+        drawTop(c, s)
+        drawTicker(c, now)
         drawReactor(c, now, s, talking)
-        drawTop(c)
-        if (showPanels) drawPanels(c, s)
+        if (showPanels) drawPanels(c, s, now)
     }
 
+    // ------------------------------------------------------------------ réacteur
     private fun drawReactor(c: Canvas, now: Long, s: Snapshot?, talking: Boolean) {
         val k = radius / 146f
         val t = if (animate) now else 0L
 
-        // halo lumineux
         val glow = if (talking) 0.30f + 0.25f * abs(sin(now / 160.0)).toFloat() else 0.26f
         fill.shader = RadialGradient(cx, cy, 128 * k, acc(glow), acc(0f), Shader.TileMode.CLAMP)
         c.drawCircle(cx, cy, 128 * k, fill)
@@ -103,7 +127,6 @@ class HudRenderer(ctx: Context) {
 
         stroke.setShadowLayer(dp(if (talking) 9f else 5f), 0f, 0f, acc(0.85f))
 
-        // anneau pointillé extérieur
         c.save()
         c.rotate(rot(t, 40000), cx, cy)
         stroke.pathEffect = dashOuter
@@ -113,7 +136,6 @@ class HudRenderer(ctx: Context) {
         stroke.pathEffect = null
         c.restore()
 
-        // anneau de batterie
         stroke.strokeWidth = 7 * k
         stroke.color = acc(0.15f)
         c.drawCircle(cx, cy, 136 * k, stroke)
@@ -127,7 +149,6 @@ class HudRenderer(ctx: Context) {
         rect.set(cx - 136 * k, cy - 136 * k, cx + 136 * k, cy + 136 * k)
         c.drawArc(rect, -90f, 360f * lvl / 100f, false, stroke)
 
-        // graduations (sans halo pour rester léger)
         stroke.clearShadowLayer()
         c.save()
         c.rotate(-rot(t, 26000), cx, cy)
@@ -145,7 +166,6 @@ class HudRenderer(ctx: Context) {
         c.restore()
         stroke.setShadowLayer(dp(5f), 0f, 0f, acc(0.85f))
 
-        // trotteuse
         val sec = (now / 1000 % 60) + (now % 1000) / 1000f
         stroke.strokeWidth = 3 * k
         stroke.color = acc(0.12f)
@@ -154,7 +174,6 @@ class HudRenderer(ctx: Context) {
         rect.set(cx - 104 * k, cy - 104 * k, cx + 104 * k, cy + 104 * k)
         c.drawArc(rect, -90f, sec / 60f * 360f, false, stroke)
 
-        // anneau segmenté rapide
         c.save()
         c.rotate(rot(t, 9000), cx, cy)
         stroke.pathEffect = dashSeg
@@ -164,7 +183,6 @@ class HudRenderer(ctx: Context) {
         stroke.pathEffect = null
         c.restore()
 
-        // arcs intérieurs
         c.save()
         c.rotate(rot(t, 40000), cx, cy)
         stroke.strokeWidth = 1.6f * k
@@ -175,7 +193,6 @@ class HudRenderer(ctx: Context) {
         c.restore()
         stroke.clearShadowLayer()
 
-        // heure, date, salutation
         val d = Date(now)
         text.textAlign = Paint.Align.CENTER
         text.typeface = bold
@@ -198,7 +215,8 @@ class HudRenderer(ctx: Context) {
         c.drawText(fit("${SystemInfo.greeting()}, $userName", radius * 1.1f), cx, cy + radius * 0.42f, text)
     }
 
-    private fun drawTop(c: Canvas) {
+    // ------------------------------------------------------------------ barre du haut
+    private fun drawTop(c: Canvas, s: Snapshot?) {
         val y = dp(62f)
         fill.color = acc(1f)
         c.drawCircle(dp(22f), y - dp(5f), dp(3.5f), fill)
@@ -210,46 +228,152 @@ class HudRenderer(ctx: Context) {
         text.setShadowLayer(dp(8f), 0f, 0f, acc(0.8f))
         c.drawText("J.A.R.V.I.S.", dp(32f), y, text)
         text.clearShadowLayer()
-        text.textAlign = Paint.Align.RIGHT
-        text.typeface = regular
-        text.textSize = dp(12f)
-        c.drawText(Build.MODEL.uppercase(Locale.FRANCE), w - dp(18f), y, text)
+        if (s != null) {
+            text.textAlign = Paint.Align.RIGHT
+            text.typeface = regular
+            text.textSize = dp(12f)
+            text.letterSpacing = 0.1f
+            c.drawText(String.format(Locale.FRANCE, "RAM %d %%  ·  %.0f °C", s.ramPct, s.batTemp), w - dp(18f), y, text)
+        }
     }
 
-    private fun panels(s: Snapshot?): List<Panel> {
-        if (s == null) return listOf(
-            Panel("ÉNERGIE", "—", "", null, 0), Panel("MÉMOIRE", "—", "", null, 0),
-            Panel("STOCKAGE", "—", "", null, 0), Panel("TEMPÉRATURE", "—", "", null, 0)
+    // ------------------------------------------------------------------ bandeau boursier
+    private fun drawTicker(c: Canvas, now: Long) {
+        fill.color = Color.argb(120, 2, 14, 22)
+        c.drawRect(tickerRect, fill)
+        fill.color = acc(0.35f)
+        c.drawRect(tickerRect.left, tickerRect.top, tickerRect.right, tickerRect.top + dp(1f), fill)
+        c.drawRect(tickerRect.left, tickerRect.bottom - dp(1f), tickerRect.right, tickerRect.bottom, fill)
+
+        val baseline = tickerRect.centerY() + dp(4.5f)
+        text.textAlign = Paint.Align.LEFT
+        text.letterSpacing = 0.05f
+        text.textSize = dp(13f)
+        if (quotes.isEmpty()) {
+            text.typeface = regular
+            text.color = subColor
+            c.drawText("MARCHÉS · en attente de connexion…", dp(14f), baseline, text)
+            return
+        }
+        // Mesure la longueur totale d'un cycle
+        val gap = dp(26f)
+        var total = 0f
+        for (q in quotes) total += itemWidth(q) + gap
+        val speed = dp(28f) / 1000f // pixels par milliseconde
+        val offset = if (animate) (now * speed) % total else 0f
+        c.save()
+        c.clipRect(tickerRect)
+        var x = dp(14f) - offset
+        while (x < w) {
+            for (q in quotes) {
+                drawItem(c, q, x, baseline)
+                x += itemWidth(q) + gap
+            }
+        }
+        c.restore()
+    }
+
+    private fun itemWidth(q: Quote): Float {
+        text.typeface = bold
+        var wd = text.measureText(q.label + " ")
+        text.typeface = regular
+        wd += text.measureText(q.valueText() + " ")
+        wd += text.measureText(arrow(q) + q.pctText())
+        return wd
+    }
+
+    private fun arrow(q: Quote) = when {
+        q.pct == null -> ""
+        q.pct > 0.005 -> "▲"
+        q.pct < -0.005 -> "▼"
+        else -> "■"
+    }
+
+    private fun drawItem(c: Canvas, q: Quote, x0: Float, y: Float) {
+        var x = x0
+        text.typeface = bold
+        text.color = acc(1f)
+        val l = q.label + " "
+        c.drawText(l, x, y, text)
+        x += text.measureText(l)
+        text.typeface = regular
+        text.color = Color.WHITE
+        val v = q.valueText() + " "
+        c.drawText(v, x, y, text)
+        x += text.measureText(v)
+        val p = q.pct
+        text.color = when {
+            p == null -> subColor
+            p > 0.005 -> upColor
+            p < -0.005 -> downColor
+            else -> subColor
+        }
+        c.drawText(arrow(q) + q.pctText(), x, y, text)
+    }
+
+    // ------------------------------------------------------------------ panneaux
+    private fun panels(s: Snapshot?, now: Long): List<Panel> {
+        val wx = weather
+        val weatherPanel = if (wx == null) Panel("MÉTÉO", "—", "Choisir une ville dans l'appli", null, 0)
+        else Panel(
+            "MÉTÉO" + if (wx.place.isNotBlank()) " · ${wx.place.uppercase(Locale.FRANCE)}" else "",
+            "${wx.temp.roundToInt()}°  ${Weather.icon(wx.code, wx.isDay)}",
+            if (wx.rainHour != null) "Pluie vers ${wx.rainHour} h · ${wx.min.roundToInt()}°/${wx.max.roundToInt()}°"
+            else "${Weather.label(wx.code)} · ${wx.min.roundToInt()}°/${wx.max.roundToInt()}°",
+            null, 0
         )
+
+        val ev = nextEvent
+        val agendaPanel = when {
+            !agendaAllowed -> Panel("AGENDA", "—", "Autoriser dans l'appli Jarvis", null, 0)
+            ev == null -> Panel("AGENDA", "Libre", "Aucun rendez-vous à venir", null, 0)
+            else -> {
+                val mins = (ev.begin - now) / 60000
+                val time = timeFmt.format(Date(ev.begin))
+                val value = when {
+                    ev.begin <= now -> "En cours"
+                    ev.begin < Agenda.dayStart(1) -> time
+                    ev.begin < Agenda.dayStart(2) -> "Dem. $time"
+                    else -> dayFmt.format(Date(ev.begin)).replace(".", "").replaceFirstChar { it.uppercase() } + " $time"
+                }
+                val soon = when {
+                    ev.begin <= now -> ""
+                    mins < 60 -> " · dans $mins min"
+                    mins < 360 -> " · dans ${mins / 60} h"
+                    else -> ""
+                }
+                Panel("AGENDA", value, ev.title + soon, null, if (ev.begin > now && mins <= 15) 1 else 0)
+            }
+        }
+
+        if (s == null) return listOf(weatherPanel, agendaPanel, Panel("ÉNERGIE", "—", "", null, 0), Panel("STOCKAGE", "—", "", null, 0))
         val batLevel = when {
             !s.charging && s.batPct <= 15 -> 2
             !s.charging && s.batPct <= 30 -> 1
             else -> 0
         }
-        val ramLevel = if (s.ramPct >= 90) 2 else if (s.ramPct >= 80) 1 else 0
         val stoLevel = if (s.stoUsedPct >= 95) 2 else if (s.stoUsedPct >= 85) 1 else 0
-        val tLevel = if (s.batTemp >= 45f) 2 else if (s.batTemp >= 40f) 1 else 0
         return listOf(
+            weatherPanel,
+            agendaPanel,
             Panel("ÉNERGIE", "${s.batPct} %", if (s.charging) "⚡ En charge" else "Sur batterie", s.batPct / 100f, batLevel),
-            Panel("MÉMOIRE", "${s.ramPct} %", "${SystemInfo.go(s.ramUsed)} / ${SystemInfo.go(s.ramTotal)}", s.ramPct / 100f, ramLevel),
             Panel("STOCKAGE", SystemInfo.go(s.stoFree), "libres sur ${SystemInfo.go(s.stoTotal)}", s.stoUsedPct / 100f, stoLevel),
-            Panel(
-                "TEMPÉRATURE", String.format(Locale.FRANCE, "%.0f °C", s.batTemp),
-                when (tLevel) { 2 -> "Très chaud !"; 1 -> "Chaud"; else -> "Normale" }, s.batTemp / 50f, tLevel
-            ),
         )
     }
 
-    private fun drawPanels(c: Canvas, s: Snapshot?) {
+    private fun drawPanels(c: Canvas, s: Snapshot?, now: Long) {
         val m = dp(16f)
         val gap = dp(10f)
         val ph = dp(96f)
         val pw = (w - 2 * m - gap) / 2f
-        var top = cy + radius + dp(30f)
+        var top = cy + radius + dp(28f)
         val maxTop = h - dp(24f) - 2 * ph - gap
         if (top > maxTop) top = maxTop
-        panels(s).forEachIndexed { i, p ->
-            drawPanel(c, m + (i % 2) * (pw + gap), top + (i / 2) * (ph + gap), pw, ph, p)
+        panels(s, now).forEachIndexed { i, p ->
+            val x = m + (i % 2) * (pw + gap)
+            val y = top + (i / 2) * (ph + gap)
+            panelRects[i].set(x, y, x + pw, y + ph)
+            drawPanel(c, x, y, pw, ph, p)
         }
     }
 
@@ -279,13 +403,13 @@ class HudRenderer(ctx: Context) {
         text.letterSpacing = 0.2f
         text.textSize = dp(10.5f)
         text.color = col
-        c.drawText(p.title, px, y + dp(20f), text)
+        c.drawText(fit(p.title, right - px), px, y + dp(20f), text)
 
         text.typeface = bold
         text.letterSpacing = 0f
         text.textSize = dp(25f)
         text.color = if (p.level > 0) col else Color.WHITE
-        c.drawText(p.value, px, y + dp(50f), text)
+        c.drawText(fit(p.value, right - px), px, y + dp(50f), text)
 
         text.typeface = regular
         text.textSize = dp(12.5f)
@@ -301,7 +425,6 @@ class HudRenderer(ctx: Context) {
         }
     }
 
-    /** Raccourcit un texte trop long pour la place disponible. */
     private fun fit(s: String, maxW: Float): String {
         if (text.measureText(s) <= maxW) return s
         var t = s

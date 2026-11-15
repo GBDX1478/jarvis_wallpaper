@@ -1,17 +1,20 @@
 package fr.guill.jarvis
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.WallpaperManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.os.Build
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
-import android.speech.tts.TextToSpeech
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -29,7 +32,6 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
-import java.util.Locale
 
 /** Écran de réglages (aussi l'icône « Jarvis » dans la liste des applis). */
 class SettingsActivity : Activity() {
@@ -38,7 +40,10 @@ class SettingsActivity : Activity() {
     private val subText = Color.rgb(143, 179, 191)
     private lateinit var sp: SharedPreferences
     private lateinit var thumbs: LinearLayout
-    private var tts: TextToSpeech? = null
+    private val speaker by lazy { Speaker(this).apply { onUnavailable = { toast("Synthèse vocale indisponible sur ce téléphone.") } } }
+    private var calStatus: TextView? = null
+    private var cityStatus: TextView? = null
+    private var locSwitch: Switch? = null
     private val accent get() = Prefs.color(this)
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -52,9 +57,16 @@ class SettingsActivity : Activity() {
     }
 
     override fun onDestroy() {
-        tts?.shutdown()
+        speaker.shutdown()
         super.onDestroy()
     }
+
+    override fun onPause() {
+        super.onPause()
+        runCatching { Reminders.schedule(this) }
+    }
+
+    private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
 
     private fun save(block: SharedPreferences.Editor.() -> Unit) = sp.edit().apply(block).apply()
 
@@ -72,6 +84,39 @@ class SettingsActivity : Activity() {
         root.addView(label("Fond d'écran interactif", 14f, subText))
         root.addView(space(18))
         root.addView(actionButton("ACTIVER LE FOND D'ÉCRAN", filled = true) { activate() })
+
+        // ---- Météo
+        root.addView(section("MÉTÉO"))
+        cityStatus = note(cityText()).also { root.addView(it) }
+        root.addView(cityRow())
+        locSwitch = Switch(this).apply {
+            isChecked = Prefs.useLocation(this@SettingsActivity) && DataRepo.hasLocationPermission(this@SettingsActivity)
+            setOnCheckedChangeListener { _, on -> onLocationSwitch(on) }
+        }
+        root.addView(row("Utiliser ma position", "Sinon, la ville choisie ci-dessus", locSwitch!!))
+
+        // ---- Agenda
+        root.addView(section("AGENDA GOOGLE"))
+        calStatus = note("").also { root.addView(it) }
+        updateCalStatus()
+        root.addView(actionButton("AUTORISER L'ACCÈS À L'AGENDA") { requestCalendar() })
+        root.addView(switchRow("Rappels vocaux avant les rendez-vous", Prefs.K_REMIND, Prefs.remind(this)))
+        root.addView(choiceRow(
+            "Prévenir",
+            listOf("5 min avant" to 5, "10 min avant" to 10, "15 min avant" to 15, "30 min avant" to 30),
+            Prefs.K_REMIND_MIN, 15
+        ))
+        root.addView(actionButton("ÉCOUTER MON AGENDA") { speaker.say(Speech.agendaToday(this)) })
+
+        // ---- Briefing & marchés
+        root.addView(section("BRIEFING & MARCHÉS"))
+        root.addView(switchRow("Briefing du matin", Prefs.K_BRIEFING, Prefs.briefing(this)))
+        root.addView(note("Jarvis fait le point (météo, agenda, marchés, batterie) la première fois que vous voyez l'écran d'accueil entre 5 h et midi."))
+        root.addView(note("Marchés suivis : CAC 40, S&P 500, Nasdaq, Bitcoin, Ethereum, EUR/USD, EUR/JPY, USD/JPY. Touchez le bandeau sur le fond d'écran pour les entendre."))
+        root.addView(space(8))
+        root.addView(actionButton("ÉCOUTER LE BRIEFING") { briefingNow() })
+        root.addView(space(8))
+        root.addView(actionButton("ACTUALISER MÉTÉO ET MARCHÉS") { refreshNow() })
 
         root.addView(section("FONDS D'ÉCRAN"))
         thumbs = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -342,25 +387,171 @@ class SettingsActivity : Activity() {
     }
 
     private fun testVoice() {
-        val txt = SystemInfo.report(Prefs.userName(this), SystemInfo.read(this))
-        val t = tts
-        if (t != null) {
-            t.speak(txt, TextToSpeech.QUEUE_FLUSH, null, "test")
+        speaker.say(Speech.report(this, runCatching { SystemInfo.read(this) }.getOrNull(), DataRepo.weather(this)))
+    }
+
+    // ---------------------------------------------------------------- météo
+    private fun cityText(): String {
+        val city = Prefs.city(this)
+        return when {
+            Prefs.useLocation(this) && DataRepo.hasLocationPermission(this) ->
+                "Position du téléphone" + if (city.isNotBlank()) " (dernière : $city)" else ""
+            city.isNotBlank() -> "Ville choisie : $city"
+            else -> "Aucune ville choisie : tapez votre ville ou activez la position."
+        }
+    }
+
+    private fun cityRow(): View {
+        val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val edit = EditText(this).apply {
+            hint = "Ville (ex. Bordeaux)"
+            setHintTextColor(subText)
+            setTextColor(Color.WHITE)
+            setText(Prefs.city(this@SettingsActivity))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+        }
+        r.addView(edit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        r.addView(actionButton("OK") {
+            val q = edit.text.toString().trim()
+            if (q.isEmpty()) return@actionButton
+            toast("Recherche de « $q »…")
+            Thread {
+                val res = Weather.geocode(q)
+                runOnUiThread {
+                    if (res == null) {
+                        toast("Ville introuvable. Vérifiez l'orthographe et la connexion.")
+                    } else {
+                        save {
+                            putString(Prefs.K_CITY, res.first)
+                            putString(Prefs.K_LAT, res.second.toString())
+                            putString(Prefs.K_LON, res.third.toString())
+                            putBoolean(Prefs.K_USE_LOC, false)
+                            putLong(Prefs.K_W_TIME, 0L)
+                        }
+                        locSwitch?.isChecked = false
+                        edit.setText(res.first)
+                        cityStatus?.text = cityText()
+                        toast("Ville enregistrée : ${res.first} ✓")
+                        Thread { DataRepo.refresh(this, force = true) }.start()
+                    }
+                }
+            }.start()
+        })
+        return r
+    }
+
+    private fun onLocationSwitch(on: Boolean) {
+        if (!on) {
+            save { putBoolean(Prefs.K_USE_LOC, false) }
+            cityStatus?.text = cityText()
             return
         }
-        tts = TextToSpeech(this) init@{ status ->
-            val engine = tts ?: return@init
-            if (status == TextToSpeech.SUCCESS) {
-                engine.language = Locale.FRENCH
-                engine.setPitch(0.9f)
-                engine.speak(txt, TextToSpeech.QUEUE_FLUSH, null, "test")
+        if (DataRepo.hasLocationPermission(this)) {
+            save { putBoolean(Prefs.K_USE_LOC, true); putLong(Prefs.K_W_TIME, 0L) }
+            fetchLocation()
+        } else {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), REQ_LOC)
+        }
+    }
+
+    @Suppress("MissingPermission", "DEPRECATION")
+    private fun fetchLocation() {
+        cityStatus?.text = "Recherche de votre position…"
+        val lm = getSystemService(LOCATION_SERVICE) as LocationManager
+        val provider = if (runCatching { lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) }.getOrDefault(false))
+            LocationManager.NETWORK_PROVIDER else LocationManager.GPS_PROVIDER
+        val onLoc: (android.location.Location?) -> Unit = { loc ->
+            if (loc != null) {
+                save { putString(Prefs.K_LAT, loc.latitude.toString()); putString(Prefs.K_LON, loc.longitude.toString()) }
+                Thread {
+                    DataRepo.placeName(this, loc.latitude, loc.longitude)?.let { n -> save { putString(Prefs.K_CITY, n) } }
+                    DataRepo.refresh(this, force = true)
+                    runOnUiThread { cityStatus?.text = cityText() }
+                }.start()
             } else {
-                Toast.makeText(this, "Synthèse vocale indisponible sur ce téléphone.", Toast.LENGTH_LONG).show()
+                runOnUiThread {
+                    cityStatus?.text = cityText()
+                    toast("Position introuvable pour l'instant. Activez la localisation du téléphone, ou tapez votre ville.")
+                }
+            }
+        }
+        DataRepo.lastKnown(this)?.let { onLoc(it) }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 30) {
+                lm.getCurrentLocation(provider, null, mainExecutor) { onLoc(it) }
+            } else {
+                lm.requestSingleUpdate(provider, { onLoc(it) }, mainLooper)
+            }
+        }.onFailure { onLoc(null) }
+    }
+
+    // ---------------------------------------------------------------- agenda
+    private fun updateCalStatus() {
+        calStatus?.text = if (Agenda.hasPermission(this)) {
+            val n = Agenda.next(this)
+            "✓ Agenda connecté." + if (n != null) " Prochain : ${n.title}." else " Aucun rendez-vous à venir."
+        } else "Jarvis n'a pas encore accès à votre agenda."
+    }
+
+    private fun requestCalendar() {
+        val perms = mutableListOf(Manifest.permission.READ_CALENDAR)
+        if (Build.VERSION.SDK_INT >= 33) perms += Manifest.permission.POST_NOTIFICATIONS
+        val missing = perms.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) {
+            toast("L'accès à l'agenda est déjà autorisé ✓")
+            updateCalStatus()
+            return
+        }
+        requestPermissions(missing.toTypedArray(), REQ_CAL)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            REQ_LOC -> {
+                if (DataRepo.hasLocationPermission(this)) {
+                    save { putBoolean(Prefs.K_USE_LOC, true); putLong(Prefs.K_W_TIME, 0L) }
+                    fetchLocation()
+                } else {
+                    locSwitch?.isChecked = false
+                    toast("Sans la position, tapez votre ville.")
+                }
+            }
+            REQ_CAL -> {
+                updateCalStatus()
+                runCatching { Reminders.schedule(this) }
+                if (!Agenda.hasPermission(this)) toast("Accès refusé. Vous pourrez l'autoriser plus tard.")
             }
         }
     }
 
+    // ---------------------------------------------------------------- briefing & marchés
+    private fun briefingNow() {
+        toast("Préparation du briefing…")
+        Thread {
+            runCatching { DataRepo.refresh(this) }
+            val s = runCatching { SystemInfo.read(this) }.getOrNull()
+            val txt = Speech.briefing(this, s, DataRepo.weather(this), DataRepo.quotes(this))
+            runOnUiThread { speaker.say(txt) }
+        }.start()
+    }
+
+    private fun refreshNow() {
+        toast("Actualisation…")
+        Thread {
+            runCatching { DataRepo.refresh(this, force = true) }
+            val w = DataRepo.weather(this)
+            val q = DataRepo.quotes(this)
+            runOnUiThread {
+                val wt = if (w != null) "Météo : ${Math.round(w.temp)}° à ${w.place}" else "Météo : aucune ville"
+                toast("$wt · Marchés : ${q.size} cours reçus")
+            }
+        }.start()
+    }
+
     companion object {
         private const val REQ_PICK = 42
+        private const val REQ_LOC = 43
+        private const val REQ_CAL = 44
     }
 }

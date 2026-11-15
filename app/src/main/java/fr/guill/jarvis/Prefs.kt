@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import java.io.File
 
-/** Réglages partagés entre l'écran de réglages et le fond d'écran. */
+/** Réglages partagés entre l'écran de réglages, le fond d'écran et les rappels. */
 object Prefs {
     val COLORS = listOf(
         "Arc" to 0xFF3EE8FF.toInt(),
@@ -15,6 +15,7 @@ object Prefs {
         "Glace" to 0xFFE8F6FF.toInt(),
     )
 
+    // Apparence
     const val K_COLOR = "color"
     const val K_DIM = "dim"
     const val K_NAME = "name"
@@ -23,6 +24,27 @@ object Prefs {
     const val K_PANELS = "panels"
     const val K_CURRENT = "current"  // nom du fichier image affiché ("" = fond par défaut)
     const val K_BGREV = "bgrev"      // change quand la liste d'images change
+
+    // Météo
+    const val K_USE_LOC = "use_loc"
+    const val K_CITY = "city"
+    const val K_LAT = "lat"
+    const val K_LON = "lon"
+
+    // Agenda & briefing
+    const val K_REMIND = "remind"
+    const val K_REMIND_MIN = "remind_min"
+    const val K_BRIEFING = "briefing"
+    const val K_LAST_BRIEF = "last_brief"
+
+    // Caches (écrits par DataRepo)
+    const val K_W_JSON = "cache_weather"
+    const val K_W_TIME = "cache_weather_t"
+    const val K_M_JSON = "cache_markets"
+    const val K_M_TIME = "cache_markets_t"
+
+    /** Clés qui ne changent que les données affichées (pas besoin de recharger le fond). */
+    val CACHE_KEYS = setOf(K_W_JSON, K_W_TIME, K_M_JSON, K_M_TIME, K_LAST_BRIEF)
 
     fun sp(c: Context): SharedPreferences = c.getSharedPreferences("jarvis", Context.MODE_PRIVATE)
 
@@ -34,6 +56,15 @@ object Prefs {
     fun fps(c: Context): Int = sp(c).getInt(K_FPS, 20)
     fun panels(c: Context): Boolean = sp(c).getBoolean(K_PANELS, true)
     fun current(c: Context): String = sp(c).getString(K_CURRENT, "") ?: ""
+
+    fun useLocation(c: Context): Boolean = sp(c).getBoolean(K_USE_LOC, false)
+    fun city(c: Context): String = sp(c).getString(K_CITY, "") ?: ""
+    fun lat(c: Context): Double? = sp(c).getString(K_LAT, null)?.toDoubleOrNull()
+    fun lon(c: Context): Double? = sp(c).getString(K_LON, null)?.toDoubleOrNull()
+
+    fun remind(c: Context): Boolean = sp(c).getBoolean(K_REMIND, true)
+    fun remindMinutes(c: Context): Int = sp(c).getInt(K_REMIND_MIN, 15)
+    fun briefing(c: Context): Boolean = sp(c).getBoolean(K_BRIEFING, true)
 
     fun imagesDir(c: Context): File = File(c.filesDir, "fonds").apply { mkdirs() }
     fun images(c: Context): List<File> =

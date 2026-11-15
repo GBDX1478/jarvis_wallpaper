@@ -8,9 +8,10 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.view.SurfaceHolder
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 
 class JarvisWallpaperService : WallpaperService() {
@@ -21,6 +22,7 @@ class JarvisWallpaperService : WallpaperService() {
         private val ctx = this@JarvisWallpaperService
         private val handler = Handler(Looper.getMainLooper())
         private val renderer = HudRenderer(ctx)
+        private val speaker = Speaker(ctx)
         private var visible = false
         private var width = 0
         private var height = 0
@@ -28,26 +30,26 @@ class JarvisWallpaperService : WallpaperService() {
         private var slide = 0
         private var snap: Snapshot? = null
         private var lastSnap = 0L
+        private var lastAgenda = 0L
+        private var lastRefreshCheck = 0L
+        private var refreshing = false
         private var lastSlide = System.currentTimeMillis()
         private var bgJob = 0
-
-        private var tts: TextToSpeech? = null
-        private var ttsReady = false
-        @Volatile private var speaking = false
 
         private val frame = Runnable { drawFrame() }
 
         override fun onCreate(surfaceHolder: SurfaceHolder) {
             super.onCreate(surfaceHolder)
             Prefs.sp(ctx).registerOnSharedPreferenceChangeListener(this)
+            speaker.onSpeakingChanged = { if (visible) drawFrame() }
             applyPrefs()
+            loadCaches()
         }
 
         override fun onDestroy() {
             handler.removeCallbacks(frame)
             Prefs.sp(ctx).unregisterOnSharedPreferenceChangeListener(this)
-            tts?.shutdown()
-            tts = null
+            speaker.shutdown()
             super.onDestroy()
         }
 
@@ -71,6 +73,8 @@ class JarvisWallpaperService : WallpaperService() {
             if (v) {
                 if (slide == -1 && !isPreview) Prefs.next(ctx)
                 lastSnap = 0L
+                lastAgenda = 0L
+                if (!isPreview) maybeBriefing() else maybeRefresh()
                 drawFrame()
             } else {
                 handler.removeCallbacks(frame)
@@ -87,16 +91,30 @@ class JarvisWallpaperService : WallpaperService() {
         override fun onCommand(
             action: String?, x: Int, y: Int, z: Int, extras: Bundle?, resultRequested: Boolean
         ): Bundle? {
-            if (action == WallpaperManager.COMMAND_TAP && renderer.hitReactor(x.toFloat(), y.toFloat())) {
-                speak()
-            }
+            if (action == WallpaperManager.COMMAND_TAP) onTap(renderer.zoneAt(x.toFloat(), y.toFloat()))
             return null
         }
 
+        private fun onTap(zone: Zone) {
+            if (zone == Zone.NONE) return
+            if (speaker.speaking) { speaker.stop(); return } // toucher à nouveau coupe la parole
+            val text = when (zone) {
+                Zone.WEATHER -> Speech.weatherFull(renderer.weather)
+                Zone.AGENDA -> Speech.agendaToday(ctx)
+                Zone.TICKER -> Speech.markets(renderer.quotes)
+                else -> Speech.report(ctx, snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull(), renderer.weather)
+            }
+            speaker.say(text)
+            maybeRefresh()
+        }
+
         override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
-            applyPrefs()
-            if (key == Prefs.K_CURRENT || key == Prefs.K_DIM || key == Prefs.K_COLOR || key == Prefs.K_BGREV) {
-                loadBackground()
+            if (key != null && key in Prefs.CACHE_KEYS) {
+                loadCaches()
+            } else {
+                applyPrefs()
+                if (key == Prefs.K_CURRENT || key == Prefs.K_DIM || key == Prefs.K_COLOR || key == Prefs.K_BGREV) loadBackground()
+                if (key == Prefs.K_LAT || key == Prefs.K_USE_LOC) maybeRefresh(force = true)
             }
             if (visible) drawFrame()
         }
@@ -108,6 +126,49 @@ class JarvisWallpaperService : WallpaperService() {
             fps = Prefs.fps(ctx)
             renderer.animate = fps > 1
             slide = Prefs.slide(ctx)
+        }
+
+        private fun loadCaches() {
+            renderer.weather = DataRepo.weather(ctx)
+            renderer.quotes = DataRepo.quotes(ctx)
+        }
+
+        private fun refreshAgenda() {
+            renderer.agendaAllowed = Agenda.hasPermission(ctx)
+            renderer.nextEvent = if (renderer.agendaAllowed) Agenda.next(ctx) else null
+        }
+
+        /** Met à jour météo et marchés si les données sont trop anciennes. */
+        private fun maybeRefresh(force: Boolean = false, then: (() -> Unit)? = null) {
+            if (refreshing) { then?.let { cb -> handler.postDelayed({ cb() }, 6000) }; return }
+            if (!force && !DataRepo.isStale(ctx)) { then?.invoke(); return }
+            refreshing = true
+            Thread {
+                runCatching { DataRepo.refresh(ctx, force) }
+                handler.post {
+                    refreshing = false
+                    loadCaches()
+                    runCatching { Reminders.schedule(ctx) }
+                    then?.invoke()
+                    if (visible) drawFrame()
+                }
+            }.start()
+        }
+
+        /** Briefing du matin : à la première apparition de l'écran d'accueil entre 5 h et midi. */
+        private fun maybeBriefing() {
+            val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+            val sp = Prefs.sp(ctx)
+            if (!Prefs.briefing(ctx) || hour !in 5..11 || sp.getString(Prefs.K_LAST_BRIEF, "") == today) {
+                maybeRefresh()
+                return
+            }
+            sp.edit().putString(Prefs.K_LAST_BRIEF, today).apply()
+            maybeRefresh(force = DataRepo.isStale(ctx)) {
+                val s = snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull()
+                speaker.say(Speech.briefing(ctx, s, renderer.weather, renderer.quotes))
+            }
         }
 
         private fun loadBackground() {
@@ -136,6 +197,14 @@ class JarvisWallpaperService : WallpaperService() {
                 snap = runCatching { SystemInfo.read(ctx) }.getOrNull() ?: snap
                 lastSnap = now
             }
+            if (now - lastAgenda > 60_000) {
+                runCatching { refreshAgenda() }
+                lastAgenda = now
+            }
+            if (visible && now - lastRefreshCheck > 60_000) {
+                lastRefreshCheck = now
+                maybeRefresh()
+            }
             if (slide > 0 && !isPreview && now - lastSlide > slide * 60_000L) {
                 lastSlide = now
                 Prefs.next(ctx)
@@ -145,7 +214,7 @@ class JarvisWallpaperService : WallpaperService() {
             var c: Canvas? = null
             try {
                 c = try { holder.lockHardwareCanvas() } catch (e: Exception) { holder.lockCanvas() }
-                if (c != null) renderer.draw(c, now, snap, speaking)
+                if (c != null) renderer.draw(c, now, snap, speaker.speaking)
             } catch (e: Exception) {
             } finally {
                 if (c != null) runCatching { holder.unlockCanvasAndPost(c) }
@@ -153,45 +222,12 @@ class JarvisWallpaperService : WallpaperService() {
 
             if (visible) {
                 val delay = when {
-                    speaking -> 33L
+                    speaker.speaking -> 33L
                     fps <= 1 -> 1000L
                     else -> 1000L / fps
                 }
                 handler.postDelayed(frame, delay)
             }
-        }
-
-        private fun speak() {
-            val s = snap ?: runCatching { SystemInfo.read(ctx) }.getOrNull() ?: return
-            val txt = SystemInfo.report(Prefs.userName(ctx), s)
-            val engine = tts
-            if (engine != null && ttsReady) {
-                say(engine, txt)
-                return
-            }
-            if (engine == null) {
-                tts = TextToSpeech(ctx) init@{ status ->
-                    ttsReady = status == TextToSpeech.SUCCESS
-                    val t = tts ?: return@init
-                    if (ttsReady) {
-                        t.language = Locale.FRENCH
-                        t.setPitch(0.9f)
-                        t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                            override fun onStart(utteranceId: String?) { speaking = true }
-                            override fun onDone(utteranceId: String?) { speaking = false }
-                            @Deprecated("Deprecated in Java")
-                            override fun onError(utteranceId: String?) { speaking = false }
-                        })
-                        say(t, txt)
-                    }
-                }
-            }
-        }
-
-        private fun say(t: TextToSpeech, txt: String) {
-            speaking = true
-            t.speak(txt, TextToSpeech.QUEUE_FLUSH, null, "jarvis")
-            handler.post { if (visible) drawFrame() }
         }
     }
 }
