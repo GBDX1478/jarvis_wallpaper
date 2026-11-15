@@ -135,6 +135,12 @@ class SettingsActivity : Activity() {
         ))
         root.addView(seekRow("Assombrir le fond", Prefs.K_DIM, Prefs.dim(this)))
 
+        root.addView(choiceRow(
+            "Centre du réacteur",
+            listOf("Météo" to 1, "Batterie" to 2, "Prochain rendez-vous" to 3, "Heure et date" to 0, "Rien (logo)" to 4),
+            Prefs.K_CENTER, 1
+        ))
+
         root.addView(section("COULEUR DE L'INTERFACE"))
         root.addView(colorRow())
 

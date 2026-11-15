@@ -36,6 +36,7 @@ class HudRenderer(ctx: Context) {
     var accent: Int = 0xFF3EE8FF.toInt()
     var userName = "Monsieur"
     var showPanels = true
+    var centerMode = 1 // 0 heure, 1 météo, 2 batterie, 3 agenda, 4 rien
     var animate = true
     var background: Bitmap? = null
     var offsetX = 0.5f
@@ -258,21 +259,40 @@ class HudRenderer(ctx: Context) {
         c.restore()
         stroke.clearShadowLayer()
 
+        // Contenu du centre selon le réglage
         val d = Date(now)
+        val wx = weather
+        val ev = nextEvent
+        var big: String? = null
+        var small: String? = null
+        when (centerMode) {
+            0 -> { big = timeFmt.format(d); small = dateFmt.format(d).replace(".", "") }
+            1 -> if (wx != null) { big = "${wx.temp.roundToInt()}°"; small = Weather.label(wx.code) + "  " + Weather.icon(wx.code, wx.isDay) }
+                 else { big = "—°"; small = "Météo en attente" }
+            2 -> if (s != null) { big = "${s.batPct}%"; small = if (s.charging) "En charge" else "Sur batterie" }
+            3 -> if (ev != null) {
+                     big = if (ev.begin <= now) "•" else timeFmt.format(Date(ev.begin))
+                     small = (if (ev.begin <= now) "En cours : " else if (ev.begin >= Agenda.dayStart(1)) "Demain : " else "") + ev.title
+                 } else { big = "Libre"; small = "Aucun rendez-vous" }
+            else -> { big = null; small = "J.A.R.V.I.S." }
+        }
         text.textAlign = Paint.Align.CENTER
-        text.typeface = bold
-        text.color = Color.WHITE
-        text.textSize = radius * 0.36f
-        text.letterSpacing = 0.04f
-        text.setShadowLayer(dp(10f), 0f, 0f, acc(0.9f))
-        c.drawText(timeFmt.format(d), cx, cy + radius * 0.1f, text)
-        text.clearShadowLayer()
-
-        text.typeface = regular
-        text.textSize = radius * 0.105f
-        text.letterSpacing = 0.2f
-        text.color = acc(1f)
-        c.drawText(dateFmt.format(d).replace(".", "").uppercase(Locale.FRANCE), cx, cy + radius * 0.27f, text)
+        if (big != null) {
+            text.typeface = bold
+            text.color = Color.WHITE
+            text.textSize = radius * (if (big.length > 6) 0.27f else 0.36f)
+            text.letterSpacing = 0.04f
+            text.setShadowLayer(dp(10f), 0f, 0f, acc(0.9f))
+            c.drawText(big, cx, cy + radius * 0.1f, text)
+            text.clearShadowLayer()
+        }
+        if (small != null) {
+            text.typeface = regular
+            text.textSize = radius * 0.105f
+            text.letterSpacing = 0.2f
+            text.color = acc(1f)
+            c.drawText(fit(small.uppercase(Locale.FRANCE), radius * 1.15f), cx, cy + if (big != null) radius * 0.27f else radius * 0.04f, text)
+        }
 
         text.textSize = radius * 0.085f
         text.letterSpacing = 0.05f

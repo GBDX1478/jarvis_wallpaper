@@ -133,6 +133,7 @@ class JarvisWallpaperService : WallpaperService() {
             renderer.accent = Prefs.color(ctx)
             renderer.userName = Prefs.userName(ctx)
             renderer.showPanels = Prefs.panels(ctx)
+            renderer.centerMode = Prefs.center(ctx)
             fps = Prefs.fps(ctx)
             renderer.animate = fps > 1
             slide = Prefs.slide(ctx)

@@ -36,6 +36,7 @@ object Prefs {
     const val K_REMIND_MIN = "remind_min"
     const val K_BRIEFING = "briefing"
     const val K_VOICE = "voice"
+    const val K_CENTER = "center"   // 0 heure, 1 météo, 2 batterie, 3 agenda, 4 rien
     const val K_LAST_BRIEF = "last_brief"
 
     // Caches (écrits par DataRepo)
@@ -67,6 +68,7 @@ object Prefs {
     fun remindMinutes(c: Context): Int = sp(c).getInt(K_REMIND_MIN, 15)
     fun briefing(c: Context): Boolean = sp(c).getBoolean(K_BRIEFING, true)
     fun voice(c: Context): Boolean = sp(c).getBoolean(K_VOICE, false)
+    fun center(c: Context): Int = sp(c).getInt(K_CENTER, 1)
 
     fun imagesDir(c: Context): File = File(c.filesDir, "fonds").apply { mkdirs() }
     fun images(c: Context): List<File> =
